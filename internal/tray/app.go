@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"fyne.io/systray"
@@ -23,26 +22,52 @@ type App struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 
-	codexHeader   *systray.MenuItem
-	codexSession  *systray.MenuItem
-	codexWeekly   *systray.MenuItem
-	claudeHeader  *systray.MenuItem
-	claudeSession *systray.MenuItem
-	claudeWeekly  *systray.MenuItem
-	updated       *systray.MenuItem
-	connectClaude *systray.MenuItem
-	refresh       *systray.MenuItem
-	quit          *systray.MenuItem
+	quotaItems      map[model.Provider]providerQuotaItems
+	providerItems   map[model.Provider]providerControlItems
+	waiting         *systray.MenuItem
+	updated         *systray.MenuItem
+	refresh         *systray.MenuItem
+	quit            *systray.MenuItem
+}
+
+type providerQuotaItems struct {
+	header  *systray.MenuItem
+	session *systray.MenuItem
+	weekly  *systray.MenuItem
+}
+
+func (items providerQuotaItems) Show() {
+	items.header.Show()
+	items.session.Show()
+	items.weekly.Show()
+}
+
+func (items providerQuotaItems) Hide() {
+	items.header.Hide()
+	items.session.Hide()
+	items.weekly.Hide()
+}
+
+type providerControlItems struct {
+	status *systray.MenuItem
+	action *systray.MenuItem
+}
+
+var providerOrder = []model.Provider{
+	model.ProviderCodex,
+	model.ProviderClaudeCode,
 }
 
 func New(service *appcore.Service, installer claude.Installer, version string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
-		service:   service,
-		installer: installer,
-		version:   version,
-		ctx:       ctx,
-		cancel:    cancel,
+		service:       service,
+		installer:     installer,
+		version:       version,
+		ctx:           ctx,
+		cancel:        cancel,
+		quotaItems:    make(map[model.Provider]providerQuotaItems),
+		providerItems: make(map[model.Provider]providerControlItems),
 	}
 }
 
@@ -57,18 +82,28 @@ func (a *App) onReady() {
 	systray.SetTooltip("AI quota · Codex and Claude Code")
 	systray.SetRemovalAllowed(false)
 
-	a.codexHeader = disabledItem("Codex")
-	a.codexSession = disabledItem("  Session —")
-	a.codexWeekly = disabledItem("  Weekly —")
-	systray.AddSeparator()
-	a.claudeHeader = disabledItem("Claude Code")
-	a.claudeSession = disabledItem("  Session —")
-	a.claudeWeekly = disabledItem("  Weekly —")
+	for _, provider := range providerOrder {
+		items := providerQuotaItems{
+			header:  disabledItem(provider.DisplayName()),
+			session: disabledItem("  Session —"),
+			weekly:  disabledItem("  Weekly —"),
+		}
+		items.Hide()
+		a.quotaItems[provider] = items
+	}
+	a.waiting = disabledItem("⏳ Waiting for provider setup")
 	systray.AddSeparator()
 	disabledItem("🔔 Alerts at 20% and 5% remaining")
 	a.updated = disabledItem("🔄 Not updated yet")
 	a.refresh = systray.AddMenuItem("↻ Refresh now", "Fetch the latest quota data")
-	a.connectClaude = systray.AddMenuItem("🔌 Connect Claude Code", "Install the official status line connector")
+	providers := systray.AddMenuItem("🧩 Providers", "Manage quota tracking providers")
+	for _, provider := range providerOrder {
+		providerMenu := providers.AddSubMenuItem(provider.DisplayName(), "Manage "+provider.DisplayName()+" quota tracking")
+		status := providerMenu.AddSubMenuItem("⏳ Checking status", "")
+		status.Disable()
+		action := providerMenu.AddSubMenuItem(initialProviderAction(provider), initialProviderActionTooltip(provider))
+		a.providerItems[provider] = providerControlItems{status: status, action: action}
+	}
 	systray.AddSeparator()
 	disabledItem("ℹ️ Version " + a.version)
 	a.quit = systray.AddMenuItem("⏻ Quit", "Quit AI quota")
@@ -94,8 +129,10 @@ func (a *App) eventLoop() {
 			a.updateMenu()
 		case <-a.refresh.ClickedCh:
 			go a.service.Refresh(a.ctx)
-		case <-a.connectClaude.ClickedCh:
-			a.toggleClaudeConnection()
+		case <-a.providerItems[model.ProviderCodex].action.ClickedCh:
+			go a.service.Refresh(a.ctx)
+		case <-a.providerItems[model.ProviderClaudeCode].action.ClickedCh:
+			a.toggleClaudeTracking()
 		case <-a.quit.ClickedCh:
 			systray.Quit()
 		}
@@ -104,20 +141,31 @@ func (a *App) eventLoop() {
 
 func (a *App) updateMenu() {
 	statuses := a.service.Statuses()
-	a.updateProvider(
-		statuses[model.ProviderCodex],
-		a.codexHeader,
-		a.codexSession,
-		a.codexWeekly,
-	)
-	a.updateProvider(
-		statuses[model.ProviderClaudeCode],
-		a.claudeHeader,
-		a.claudeSession,
-		a.claudeWeekly,
-	)
+	claudeConnected, claudeSettingsErr := a.installer.IsConnected()
+	visibleProviders := make(map[model.Provider]bool, len(providerOrder))
+	visibleCount := 0
+	for _, provider := range providerOrder {
+		visible := len(statuses[provider].Windows) > 0
+		if provider == model.ProviderClaudeCode {
+			visible = visible && claudeSettingsErr == nil && claudeConnected
+		}
+		visibleProviders[provider] = visible
+		if a.updateProvider(statuses[provider], a.quotaItems[provider], visible) {
+			visibleCount++
+		}
+	}
+	if visibleCount == 0 {
+		if claudeConnected && claudeSettingsErr == nil {
+			a.waiting.SetTitle("⏳ Waiting for quota data")
+		} else {
+			a.waiting.SetTitle("⏳ Waiting for provider setup")
+		}
+		a.waiting.Show()
+	} else {
+		a.waiting.Hide()
+	}
 
-	if remaining, ok := a.service.MostUrgentRemaining(time.Now()); ok {
+	if remaining, ok := mostUrgentRemaining(statuses, visibleProviders, time.Now()); ok {
 		severity := model.SeverityForRemaining(float64(remaining))
 		systray.SetTitle(fmt.Sprintf("%s %d%%", severity.Emoji(), remaining))
 	} else {
@@ -125,7 +173,10 @@ func (a *App) updateMenu() {
 	}
 
 	latest := time.Time{}
-	for _, status := range statuses {
+	for provider, status := range statuses {
+		if !visibleProviders[provider] {
+			continue
+		}
 		if status.UpdatedAt.After(latest) {
 			latest = status.UpdatedAt
 		}
@@ -136,22 +187,20 @@ func (a *App) updateMenu() {
 		a.updated.SetTitle("🔄 Updated " + formatAgo(time.Since(latest)))
 	}
 
-	connected, err := a.installer.IsConnected()
-	if err == nil && connected {
-		a.connectClaude.SetTitle("🔌 Disconnect Claude Code")
-		a.connectClaude.SetTooltip("Restore the backed-up status line")
-	} else {
-		a.connectClaude.SetTitle("🔌 Connect Claude Code")
-		a.connectClaude.SetTooltip("Install the official status line connector")
-	}
+	a.updateCodexProviderMenu(statuses[model.ProviderCodex])
+	a.updateClaudeProviderMenu(statuses[model.ProviderClaudeCode], claudeConnected, claudeSettingsErr)
 }
 
 func (a *App) updateProvider(
 	status model.ProviderStatus,
-	header *systray.MenuItem,
-	sessionItem *systray.MenuItem,
-	weeklyItem *systray.MenuItem,
-) {
+	items providerQuotaItems,
+	visible bool,
+) bool {
+	if !visible {
+		items.Hide()
+		return false
+	}
+	items.Show()
 	headerTitle := status.Provider.DisplayName()
 	if headerTitle == "" {
 		headerTitle = "—"
@@ -159,18 +208,13 @@ func (a *App) updateProvider(
 	if status.Error != "" {
 		headerTitle = "⚠️ " + headerTitle
 	}
-	header.SetTitle(headerTitle)
-
-	if len(status.Windows) == 0 && status.Error != "" {
-		sessionItem.SetTitle("  " + shorten(status.Error, 54))
-		weeklyItem.SetTitle("  Weekly —")
-		return
-	}
-	sessionItem.SetTitle(formatWindow(status, model.WindowSession, time.Now()))
-	weeklyItem.SetTitle(formatWindow(status, model.WindowWeekly, time.Now()))
+	items.header.SetTitle(headerTitle)
+	items.session.SetTitle(formatWindow(status, model.WindowSession, time.Now()))
+	items.weekly.SetTitle(formatWindow(status, model.WindowWeekly, time.Now()))
+	return true
 }
 
-func (a *App) toggleClaudeConnection() {
+func (a *App) toggleClaudeTracking() {
 	connected, err := a.installer.IsConnected()
 	if err != nil {
 		_ = notify.Send("⚠️ Could not read Claude Code settings", err.Error())
@@ -179,22 +223,113 @@ func (a *App) toggleClaudeConnection() {
 	if connected {
 		err = a.installer.Disconnect()
 		if err == nil {
-			_ = notify.Send("AI quota", "Claude Code was disconnected and its previous status line was restored.")
+			a.service.ClearProvider(model.ProviderClaudeCode)
+			_ = notify.Send("AI quota", "Claude Code tracking was disabled and its previous status line was restored.")
 		}
 	} else {
 		err = a.installer.Connect()
 		if err == nil {
-			_ = notify.Send("AI quota", "Claude Code is connected. Send a prompt to receive the latest quota data.")
+			a.service.ClearProvider(model.ProviderClaudeCode)
+			_ = notify.Send("AI quota", "Claude Code tracking is enabled. Send a prompt to receive the latest quota data.")
 		}
 	}
 	if err != nil {
 		message := err.Error()
 		if errors.Is(err, claude.ErrSettingsChanged) {
-			message = "The status line changed after connection. AI quota will not overwrite the current settings."
+			message = "The status line changed after tracking was enabled. AI quota will not overwrite the current settings."
 		}
-		_ = notify.Send("⚠️ Could not update Claude Code", message)
+		_ = notify.Send("⚠️ Could not update Claude Code tracking", message)
 	}
 	a.updateMenu()
+}
+
+func (a *App) updateCodexProviderMenu(status model.ProviderStatus) {
+	items := a.providerItems[model.ProviderCodex]
+	items.action.SetTitle("Check availability")
+	items.action.SetTooltip("Check the local Codex CLI and refresh quota data")
+	switch {
+	case len(status.Windows) > 0 && status.Error == "":
+		items.status.SetTitle("🟢 Tracking active")
+		items.status.SetTooltip("Codex quota data is available")
+	case len(status.Windows) > 0:
+		items.status.SetTitle("🟡 Showing cached quota")
+		items.status.SetTooltip(status.Error)
+	case status.Error != "":
+		items.status.SetTitle("⚪ Setup required")
+		items.status.SetTooltip(status.Error)
+	default:
+		items.status.SetTitle("⏳ Checking availability")
+		items.status.SetTooltip("Waiting for the first Codex quota refresh")
+	}
+}
+
+func (a *App) updateClaudeProviderMenu(status model.ProviderStatus, connected bool, settingsErr error) {
+	items := a.providerItems[model.ProviderClaudeCode]
+	if settingsErr != nil {
+		items.status.SetTitle("⚠️ Settings unavailable")
+		items.status.SetTooltip(settingsErr.Error())
+		items.action.SetTitle("Enable tracking")
+		items.action.SetTooltip("Install the official Claude Code status line connector")
+		return
+	}
+	if !connected {
+		items.status.SetTitle("⚪ Tracking disabled")
+		items.status.SetTooltip("Claude Code quota tracking is not configured")
+		items.action.SetTitle("Enable tracking")
+		items.action.SetTooltip("Install the official Claude Code status line connector")
+		return
+	}
+	if len(status.Windows) == 0 {
+		items.status.SetTitle("⏳ Waiting for quota data")
+		items.status.SetTooltip("Send a Claude Code prompt to receive quota data")
+	} else if status.Error != "" {
+		items.status.SetTitle("🟡 Showing cached quota")
+		items.status.SetTooltip(status.Error)
+	} else {
+		items.status.SetTitle("🟢 Tracking active")
+		items.status.SetTooltip("Claude Code quota data is available")
+	}
+	items.action.SetTitle("Disable tracking")
+	items.action.SetTooltip("Restore the previous Claude Code status line")
+}
+
+func initialProviderAction(provider model.Provider) string {
+	if provider == model.ProviderCodex {
+		return "Check availability"
+	}
+	return "Enable tracking"
+}
+
+func initialProviderActionTooltip(provider model.Provider) string {
+	if provider == model.ProviderCodex {
+		return "Check the local Codex CLI and refresh quota data"
+	}
+	return "Enable quota tracking for " + provider.DisplayName()
+}
+
+func mostUrgentRemaining(
+	statuses map[model.Provider]model.ProviderStatus,
+	visible map[model.Provider]bool,
+	now time.Time,
+) (int, bool) {
+	minimum := 101
+	found := false
+	for provider, status := range statuses {
+		if !visible[provider] {
+			continue
+		}
+		for _, window := range status.Windows {
+			if !window.ResetsAt.After(now) {
+				continue
+			}
+			remaining := window.RoundedRemainingPercent()
+			if remaining < minimum {
+				minimum = remaining
+				found = true
+			}
+		}
+	}
+	return minimum, found
 }
 
 func (a *App) onExit() {
@@ -239,13 +374,4 @@ func formatAgo(duration time.Duration) string {
 	default:
 		return fmt.Sprintf("%d days ago", int(duration/(24*time.Hour)))
 	}
-}
-
-func shorten(value string, limit int) string {
-	value = strings.TrimSpace(value)
-	characters := []rune(value)
-	if len(characters) <= limit {
-		return value
-	}
-	return string(characters[:limit-1]) + "…"
 }

@@ -3,6 +3,7 @@ package appcore
 import (
 	"context"
 	"errors"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -96,6 +97,24 @@ func (s *Service) MostUrgentRemaining(now time.Time) (int, bool) {
 		}
 	}
 	return minimum, found
+}
+
+// ClearProvider removes cached quota after tracking is disabled or reconfigured.
+func (s *Service) ClearProvider(provider model.Provider) {
+	s.mu.Lock()
+	s.statuses[provider] = model.ProviderStatus{Provider: provider}
+	s.mu.Unlock()
+
+	path := ""
+	switch provider {
+	case model.ProviderCodex:
+		path = s.paths.CodexCache()
+	case model.ProviderClaudeCode:
+		path = s.paths.ClaudeCache()
+	}
+	if path != "" {
+		_ = os.Remove(path)
+	}
 }
 
 func (s *Service) loadCached(provider model.Provider, path string) {

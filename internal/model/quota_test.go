@@ -35,3 +35,19 @@ func TestNormalizeKeepsNewestWindow(t *testing.T) {
 		t.Fatalf("unexpected normalized windows: %#v", status.Windows)
 	}
 }
+
+func TestFormatResetUsesRelativeDaysForWeeklyWindow(t *testing.T) {
+	now := time.Date(2026, time.August, 30, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(6*24*time.Hour + 10*time.Hour + 25*time.Minute)
+	if got := FormatReset(now, reset); got != "resets in 6d 10h" {
+		t.Fatalf("reset = %q, want relative days and hours", got)
+	}
+}
+
+func TestFormatResetUsesHoursAndMinutesForSessionWindow(t *testing.T) {
+	now := time.Date(2026, time.August, 30, 10, 0, 0, 0, time.UTC)
+	reset := now.Add(4*time.Hour + 34*time.Minute)
+	if got := FormatReset(now, reset); got != "resets in 4h 34m" {
+		t.Fatalf("reset = %q, want relative hours and minutes", got)
+	}
+}

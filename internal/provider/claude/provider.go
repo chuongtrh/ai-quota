@@ -10,7 +10,7 @@ import (
 	"github.com/chuongtrh/ai-quota/internal/storage"
 )
 
-var ErrNoQuotaData = errors.New("Claude Code is not connected or has no active session data")
+var ErrNoQuotaData = errors.New("Claude Code tracking is disabled or no active quota data is available")
 
 type CacheProvider struct {
 	paths config.Paths

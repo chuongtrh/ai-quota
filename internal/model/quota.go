@@ -153,15 +153,17 @@ func FormatReset(now, resetsAt time.Time) string {
 	if remaining <= 0 {
 		return "waiting for data after reset"
 	}
-	if remaining < 24*time.Hour {
-		hours := int(remaining / time.Hour)
-		minutes := int((remaining % time.Hour) / time.Minute)
-		if hours == 0 {
-			return fmt.Sprintf("resets in %d min", max(minutes, 1))
-		}
-		return fmt.Sprintf("resets in %dh %02dm", hours, minutes)
+	days := int(remaining / (24 * time.Hour))
+	if days > 0 {
+		hours := int((remaining % (24 * time.Hour)) / time.Hour)
+		return fmt.Sprintf("resets in %dd %dh", days, hours)
 	}
-	return "resets " + resetsAt.Local().Format("Jan 02, 15:04")
+	hours := int(remaining / time.Hour)
+	minutes := int((remaining % time.Hour) / time.Minute)
+	if hours == 0 {
+		return fmt.Sprintf("resets in %d min", max(minutes, 1))
+	}
+	return fmt.Sprintf("resets in %dh %02dm", hours, minutes)
 }
 
 func clamp(value, low, high float64) float64 {

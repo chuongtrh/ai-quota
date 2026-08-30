@@ -6,6 +6,7 @@ A lightweight macOS menu bar app for tracking Codex and Claude Code subscription
 
 - Tracks Codex **session** and **weekly** quota windows.
 - Tracks Claude Code **5-hour** and **7-day** quota windows.
+- Shows relative reset countdowns, including days for weekly limits.
 - Shows the most urgent remaining quota in the menu bar.
 - Sends native macOS alerts at 20%, 5%, and 0% remaining.
 - Requires no server, database, or separate account.
@@ -105,17 +106,20 @@ For a custom Codex location during development, set `AIQUOTA_CODEX_PATH` before 
 ### Claude Code
 
 1. Open AI quota from the macOS menu bar.
-2. Select **🔌 Connect Claude Code**.
-3. Open Claude Code and send at least one prompt.
+2. Open **🧩 Providers → Claude Code**.
+3. Select **Enable tracking**.
+4. Open Claude Code and send at least one prompt.
 
-When connecting, AI quota:
+When tracking is enabled, AI quota:
 
 - Creates a timestamped backup of `~/.claude/settings.json`.
 - Separately saves the current `statusLine` value.
 - Installs its bridge at `~/Library/Application Support/AIQuota/bin/aiquota-bridge`.
 - Passes through output from an existing status line command so the current Claude Code display remains unchanged.
 
-Selecting **Disconnect Claude Code** restores the previous `statusLine` exactly. If another app changed the setting after AI quota connected, AI quota stops without overwriting the newer configuration.
+Selecting **Disable tracking** restores the previous `statusLine` exactly. If another app changed the setting after tracking was enabled, AI quota stops without overwriting the newer configuration.
+
+The quota area only lists providers that have active quota data. Providers that still require setup are managed under **🧩 Providers**; when none are ready, the quota area shows a single waiting message.
 
 ## Local data
 
@@ -147,15 +151,23 @@ Remaining quota is calculated as `100 - used_percentage` from provider-reported 
 ## Project structure
 
 ```text
-cmd/aiquota                 App entry point and Claude bridge mode
-cmd/icon-gen                macOS iconset generator
-internal/appcore            Refresh orchestration and in-memory state
-internal/provider/codex     Codex App Server connector
-internal/provider/claude    Status line connector and settings backup
-internal/alerts             Alert thresholds and deduplication
-internal/notify             Native macOS UserNotifications bridge
-internal/tray               Menu bar interface
-scripts/build.sh            Test, build, package, and sign the .app
+cmd/aiquota/                 App entry point and Claude bridge mode
+cmd/icon-gen/                macOS iconset generator
+internal/alerts/             Alert thresholds and deduplication
+internal/appcore/            Refresh orchestration and in-memory state
+internal/config/             Application data and provider paths
+internal/icon/               Programmatic tray and app icon rendering
+internal/model/              Normalized providers, windows, and severity
+internal/notify/             Native macOS UserNotifications bridge
+internal/provider/           Provider extension interface
+internal/provider/codex/     Codex App Server connector
+internal/provider/claude/    Status line connector, cache, and settings backup
+internal/storage/            Atomic JSON persistence
+internal/tray/               Menu bar UI and provider management menus
+packaging/macos/Info.plist   macOS bundle metadata
+scripts/build.sh             Test, build, package, and sign the .app
+Makefile                     Development and build shortcuts
+go.mod                       Go module and dependency versions
 ```
 
 ## License
