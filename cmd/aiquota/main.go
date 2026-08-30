@@ -1,0 +1,51 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"runtime"
+
+	"github.com/chuongtrh/ai-quota/internal/appcore"
+	"github.com/chuongtrh/ai-quota/internal/config"
+	"github.com/chuongtrh/ai-quota/internal/provider/claude"
+	"github.com/chuongtrh/ai-quota/internal/tray"
+)
+
+var version = "dev"
+
+func main() {
+	paths, err := config.DefaultPaths()
+	if err != nil {
+		fatal(err)
+	}
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case claude.BridgeFlag:
+			if err := claude.RunBridge(paths, os.Stdin, os.Stdout); err != nil {
+				// Claude Code still receives a useful status line; the failure is signaled by the exit code.
+				os.Exit(1)
+			}
+			return
+		case "--version":
+			fmt.Println(version)
+			return
+		}
+	}
+	if err := paths.Ensure(); err != nil {
+		fatal(err)
+	}
+	executable, err := os.Executable()
+	if err != nil {
+		fatal(err)
+	}
+
+	runtime.LockOSThread()
+	service := appcore.New(paths, version)
+	installer := claude.Installer{Paths: paths, Executable: executable}
+	tray.New(service, installer, version).Run()
+}
+
+func fatal(err error) {
+	_, _ = fmt.Fprintln(os.Stderr, "AI quota:", err)
+	os.Exit(1)
+}
