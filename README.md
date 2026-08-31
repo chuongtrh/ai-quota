@@ -79,6 +79,48 @@ CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" ./scripts/build
 
 The default signing identity is `-`, which creates an ad-hoc signature suitable for running the app on the Mac that built it.
 
+## Publish a GitHub release
+
+Install and authenticate GitHub CLI once:
+
+```bash
+brew install gh
+gh auth login
+```
+
+Publish a release from a clean branch that exactly matches its remote branch:
+
+```bash
+make release VERSION=0.2.0
+```
+
+You can also run the script directly, with or without the `v` prefix:
+
+```bash
+./scripts/release.sh 0.2.0
+./scripts/release.sh v0.2.0
+```
+
+Before building, the release script checks local tags, remote Git tags, and GitHub Releases using both `v0.2.0` and `0.2.0`. If any match already exists, the script exits with an error. Authentication, network, or GitHub API failures also stop the release instead of being treated as a missing version.
+
+For a new version, the script:
+
+1. Verifies the Git working tree is clean and synchronized with its remote branch.
+2. Runs the standard test and macOS build pipeline.
+3. Creates `AIQuota-0.2.0-macos.zip` and `SHA256SUMS`.
+4. Creates tag `v0.2.0` at the current commit.
+5. Publishes a GitHub Release with generated notes and both assets.
+
+The default build number is a UTC timestamp. Override signing or the build number when needed:
+
+```bash
+CODESIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+BUILD_NUMBER=2026083101 \
+make release VERSION=0.2.0
+```
+
+Ad-hoc signing is suitable for local builds. Distribution to other Macs without Gatekeeper warnings requires a Developer ID signature and Apple notarization.
+
 ## Development
 
 ```bash
@@ -166,6 +208,7 @@ internal/storage/            Atomic JSON persistence
 internal/tray/               Menu bar UI and provider management menus
 packaging/macos/Info.plist   macOS bundle metadata
 scripts/build.sh             Test, build, package, and sign the .app
+scripts/release.sh           Validate, build, and publish a GitHub Release
 Makefile                     Development and build shortcuts
 go.mod                       Go module and dependency versions
 ```
