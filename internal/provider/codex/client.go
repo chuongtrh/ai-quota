@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/chuongtrh/ai-quota/internal/model"
@@ -22,6 +23,10 @@ var ErrNotInstalled = errors.New("codex command not found")
 type Client struct {
 	Command string
 	Version string
+
+	commandMu       sync.Mutex
+	resolvedCommand string
+	lookupCommand   func(string) (string, error)
 }
 
 func New(version string) *Client {
@@ -34,11 +39,7 @@ func (c *Client) ID() model.Provider {
 
 func (c *Client) Fetch(ctx context.Context) (model.ProviderStatus, error) {
 	status := model.ProviderStatus{Provider: model.ProviderCodex, UpdatedAt: time.Now()}
-	command := c.Command
-	if command == "" {
-		command = "codex"
-	}
-	path, err := findCommand(command)
+	path, err := c.commandPath()
 	if err != nil {
 		return status, ErrNotInstalled
 	}
@@ -56,6 +57,7 @@ func (c *Client) Fetch(ctx context.Context) (model.ProviderStatus, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		c.invalidateCommandPath(path)
 		return status, fmt.Errorf("start Codex App Server: %w", err)
 	}
 	defer func() {
@@ -100,6 +102,36 @@ func (c *Client) Fetch(ctx context.Context) (model.ProviderStatus, error) {
 		return status, err
 	}
 	return parseRateLimitResult(response.Result, status.UpdatedAt)
+}
+
+func (c *Client) commandPath() (string, error) {
+	c.commandMu.Lock()
+	defer c.commandMu.Unlock()
+	if c.resolvedCommand != "" {
+		return c.resolvedCommand, nil
+	}
+	command := c.Command
+	if command == "" {
+		command = "codex"
+	}
+	lookup := c.lookupCommand
+	if lookup == nil {
+		lookup = findCommand
+	}
+	path, err := lookup(command)
+	if err != nil {
+		return "", err
+	}
+	c.resolvedCommand = path
+	return path, nil
+}
+
+func (c *Client) invalidateCommandPath(path string) {
+	c.commandMu.Lock()
+	defer c.commandMu.Unlock()
+	if c.resolvedCommand == path {
+		c.resolvedCommand = ""
+	}
 }
 
 func findCommand(command string) (string, error) {
@@ -192,7 +224,7 @@ func readRateLimitResponse(reader io.Reader) (rpcResponse, error) {
 }
 
 type rateLimitResult struct {
-	RateLimits          *rateLimitBucket            `json:"rateLimits"`
+	RateLimits          *rateLimitBucket           `json:"rateLimits"`
 	RateLimitsByLimitID map[string]rateLimitBucket `json:"rateLimitsByLimitId"`
 }
 

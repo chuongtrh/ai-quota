@@ -16,18 +16,40 @@ import (
 )
 
 type App struct {
-	service   *appcore.Service
-	installer claude.Installer
-	version   string
-	ctx       context.Context
-	cancel    context.CancelFunc
+	service          *appcore.Service
+	installer        claude.Installer
+	claudeConnection connectionStateCache
+	version          string
+	ctx              context.Context
+	cancel           context.CancelFunc
 
-	quotaItems      map[model.Provider]providerQuotaItems
-	providerItems   map[model.Provider]providerControlItems
-	waiting         *systray.MenuItem
-	updated         *systray.MenuItem
-	refresh         *systray.MenuItem
-	quit            *systray.MenuItem
+	quotaItems    map[model.Provider]providerQuotaItems
+	providerItems map[model.Provider]providerControlItems
+	waiting       *systray.MenuItem
+	updated       *systray.MenuItem
+	refresh       *systray.MenuItem
+	quit          *systray.MenuItem
+}
+
+type connectionStateCache struct {
+	check       func() (bool, error)
+	interval    time.Duration
+	now         func() time.Time
+	checkedAt   time.Time
+	initialized bool
+	connected   bool
+	err         error
+}
+
+func (c *connectionStateCache) Get(force bool) (bool, error) {
+	now := c.now()
+	if !force && c.initialized && now.Sub(c.checkedAt) < c.interval {
+		return c.connected, c.err
+	}
+	c.connected, c.err = c.check()
+	c.checkedAt = now
+	c.initialized = true
+	return c.connected, c.err
 }
 
 type providerQuotaItems struct {
@@ -61,8 +83,13 @@ var providerOrder = []model.Provider{
 func New(service *appcore.Service, installer claude.Installer, version string) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
-		service:       service,
-		installer:     installer,
+		service:   service,
+		installer: installer,
+		claudeConnection: connectionStateCache{
+			check:    installer.IsConnected,
+			interval: time.Minute,
+			now:      time.Now,
+		},
 		version:       version,
 		ctx:           ctx,
 		cancel:        cancel,
@@ -116,7 +143,7 @@ func (a *App) onReady() {
 
 func (a *App) eventLoop() {
 	refreshTicker := time.NewTicker(60 * time.Second)
-	uiTicker := time.NewTicker(2 * time.Second)
+	uiTicker := time.NewTicker(30 * time.Second)
 	defer refreshTicker.Stop()
 	defer uiTicker.Stop()
 	for {
@@ -141,7 +168,7 @@ func (a *App) eventLoop() {
 
 func (a *App) updateMenu() {
 	statuses := a.service.Statuses()
-	claudeConnected, claudeSettingsErr := a.installer.IsConnected()
+	claudeConnected, claudeSettingsErr := a.claudeConnection.Get(false)
 	visibleProviders := make(map[model.Provider]bool, len(providerOrder))
 	visibleCount := 0
 	for _, provider := range providerOrder {
@@ -215,7 +242,7 @@ func (a *App) updateProvider(
 }
 
 func (a *App) toggleClaudeTracking() {
-	connected, err := a.installer.IsConnected()
+	connected, err := a.claudeConnection.Get(true)
 	if err != nil {
 		_ = notify.Send("⚠️ Could not read Claude Code settings", err.Error())
 		return
@@ -240,6 +267,7 @@ func (a *App) toggleClaudeTracking() {
 		}
 		_ = notify.Send("⚠️ Could not update Claude Code tracking", message)
 	}
+	_, _ = a.claudeConnection.Get(true)
 	a.updateMenu()
 }
 

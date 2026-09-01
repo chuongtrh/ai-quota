@@ -48,18 +48,31 @@ func (s *Service) Refresh(ctx context.Context) {
 	}
 	defer s.refreshing.Store(false)
 
+	type fetchResult struct {
+		source providerapi.Provider
+		status model.ProviderStatus
+		err    error
+	}
+	results := make(chan fetchResult, len(s.providers))
 	for _, source := range s.providers {
-		providerContext, cancel := context.WithTimeout(ctx, 15*time.Second)
-		status, err := source.Fetch(providerContext)
-		cancel()
-		if err != nil {
-			s.setError(source.ID(), friendlyProviderError(source.ID(), err))
+		go func() {
+			providerContext, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			status, err := source.Fetch(providerContext)
+			results <- fetchResult{source: source, status: status, err: err}
+		}()
+	}
+
+	for range s.providers {
+		result := <-results
+		if result.err != nil {
+			s.setError(result.source.ID(), friendlyProviderError(result.source.ID(), result.err))
 			continue
 		}
-		if source.ID() == model.ProviderCodex {
-			_ = storage.WriteJSON(s.paths.CodexCache(), status, 0o600)
+		if result.source.ID() == model.ProviderCodex {
+			_ = storage.WriteJSON(s.paths.CodexCache(), result.status, 0o600)
 		}
-		s.setStatus(status)
+		s.setStatus(result.status)
 	}
 
 	for _, status := range s.Statuses() {
