@@ -1,4 +1,5 @@
 /build/
 /dist/
+/.worktrees/
 *.log
 .DS_Store
