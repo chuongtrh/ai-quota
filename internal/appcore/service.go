@@ -13,6 +13,7 @@ import (
 	"github.com/chuongtrh/ai-quota/internal/model"
 	"github.com/chuongtrh/ai-quota/internal/notify"
 	providerapi "github.com/chuongtrh/ai-quota/internal/provider"
+	"github.com/chuongtrh/ai-quota/internal/provider/antigravity"
 	"github.com/chuongtrh/ai-quota/internal/provider/claude"
 	"github.com/chuongtrh/ai-quota/internal/provider/codex"
 	"github.com/chuongtrh/ai-quota/internal/storage"
@@ -33,12 +34,14 @@ func New(paths config.Paths, version string) *Service {
 		providers: []providerapi.Provider{
 			codex.New(version),
 			claude.NewCacheProvider(paths),
+			antigravity.NewCacheProvider(paths),
 		},
 		alerts:   alerts.NewManager(paths.AlertState()),
 		statuses: make(map[model.Provider]model.ProviderStatus),
 	}
 	service.loadCached(model.ProviderCodex, paths.CodexCache())
 	service.loadCached(model.ProviderClaudeCode, paths.ClaudeCache())
+	service.loadCached(model.ProviderAntigravity, paths.AntigravityCache())
 	return service
 }
 
@@ -124,6 +127,8 @@ func (s *Service) ClearProvider(provider model.Provider) {
 		path = s.paths.CodexCache()
 	case model.ProviderClaudeCode:
 		path = s.paths.ClaudeCache()
+	case model.ProviderAntigravity:
+		path = s.paths.AntigravityCache()
 	}
 	if path != "" {
 		_ = os.Remove(path)
@@ -170,6 +175,12 @@ func friendlyProviderError(id model.Provider, err error) string {
 	}
 	if id == model.ProviderClaudeCode {
 		return "Could not read Claude Code quota data"
+	}
+	if id == model.ProviderAntigravity && errors.Is(err, antigravity.ErrNoQuotaData) {
+		return err.Error()
+	}
+	if id == model.ProviderAntigravity {
+		return "Could not read Google Antigravity CLI quota data"
 	}
 	return err.Error()
 }
