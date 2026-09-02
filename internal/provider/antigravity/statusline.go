@@ -1,11 +1,14 @@
 package antigravity
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math"
+	"os/exec"
 	"strings"
 	"time"
 
@@ -87,8 +90,43 @@ func RunBridge(paths config.Paths, input io.Reader, output io.Writer) error {
 	if parseErr == nil {
 		_ = storage.WriteJSON(paths.AntigravityCache(), status, 0o600)
 	}
-	_, _ = io.WriteString(output, formatStatusLine(status)+"\n")
+	previousOutput := runPreviousStatusLine(paths, data)
+	if len(bytes.TrimSpace(previousOutput)) > 0 {
+		_, _ = output.Write(previousOutput)
+		if previousOutput[len(previousOutput)-1] != '\n' {
+			_, _ = io.WriteString(output, "\n")
+		}
+	} else {
+		_, _ = io.WriteString(output, formatStatusLine(status)+"\n")
+	}
 	return nil
+}
+
+func runPreviousStatusLine(paths config.Paths, input []byte) []byte {
+	var backup StatusLineBackup
+	if err := storage.ReadJSON(paths.AntigravityStatusLineBackup(), &backup); err != nil || !backup.HadValue {
+		return nil
+	}
+	var previous struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(backup.Value, &previous); err != nil || previous.Command == "" {
+		return nil
+	}
+	if strings.Contains(previous.Command, BridgeFlag) {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "/bin/sh", "-c", previous.Command)
+	cmd.Stdin = bytes.NewReader(input)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	if err := cmd.Run(); err != nil {
+		return nil
+	}
+	return output.Bytes()
 }
 
 func formatStatusLine(status model.ProviderStatus) string {
