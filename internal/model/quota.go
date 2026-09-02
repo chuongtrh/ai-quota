@@ -45,9 +45,17 @@ func (k WindowKind) DisplayName() string {
 
 type Window struct {
 	Kind            WindowKind `json:"kind"`
+	Label           string     `json:"label,omitempty"`
 	UsedPercent     float64    `json:"used_percent"`
 	DurationMinutes int64      `json:"duration_minutes,omitempty"`
 	ResetsAt        time.Time  `json:"resets_at"`
+}
+
+func (w Window) DisplayName() string {
+	if w.Label != "" {
+		return w.Label
+	}
+	return w.Kind.DisplayName()
 }
 
 func (w Window) RemainingPercent() float64 {
@@ -63,10 +71,10 @@ func (w Window) Valid() bool {
 }
 
 type ProviderStatus struct {
-	Provider  Provider         `json:"provider"`
-	Windows   []Window         `json:"windows,omitempty"`
-	UpdatedAt time.Time        `json:"updated_at"`
-	Error     string           `json:"error,omitempty"`
+	Provider  Provider          `json:"provider"`
+	Windows   []Window          `json:"windows,omitempty"`
+	UpdatedAt time.Time         `json:"updated_at"`
+	Error     string            `json:"error,omitempty"`
 	Metadata  map[string]string `json:"metadata,omitempty"`
 }
 
@@ -93,14 +101,28 @@ func (s *ProviderStatus) Normalize() {
 	}
 
 	s.Windows = s.Windows[:0]
-	for _, kind := range []WindowKind{WindowSession, WindowWeekly} {
-		if window, exists := best[kind]; exists {
-			s.Windows = append(s.Windows, window)
-		}
+	for _, window := range best {
+		s.Windows = append(s.Windows, window)
 	}
 	sort.SliceStable(s.Windows, func(i, j int) bool {
+		leftRank := windowKindRank(s.Windows[i].Kind)
+		rightRank := windowKindRank(s.Windows[j].Kind)
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
 		return s.Windows[i].Kind < s.Windows[j].Kind
 	})
+}
+
+func windowKindRank(kind WindowKind) int {
+	switch kind {
+	case WindowSession:
+		return 0
+	case WindowWeekly:
+		return 1
+	default:
+		return 2
+	}
 }
 
 func ClassifyWindow(durationMinutes int64) WindowKind {

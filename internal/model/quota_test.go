@@ -36,6 +36,28 @@ func TestNormalizeKeepsNewestWindow(t *testing.T) {
 	}
 }
 
+func TestNormalizeKeepsCustomWindows(t *testing.T) {
+	now := time.Now()
+	status := ProviderStatus{Windows: []Window{
+		{Kind: "gemini-weekly", Label: "Gemini Weekly", UsedPercent: 20, ResetsAt: now.Add(time.Hour)},
+		{Kind: "claude-weekly", Label: "Claude Weekly", UsedPercent: 30, ResetsAt: now.Add(2 * time.Hour)},
+	}}
+	status.Normalize()
+	if len(status.Windows) != 2 {
+		t.Fatalf("normalized windows = %#v; want two custom windows", status.Windows)
+	}
+	if got := status.Windows[1].DisplayName(); got != "Gemini Weekly" {
+		t.Fatalf("display name = %q, want Gemini Weekly", got)
+	}
+}
+
+func TestCustomWindowDisplayNameFallsBackToKind(t *testing.T) {
+	window := Window{Kind: "gemini-weekly"}
+	if got := window.DisplayName(); got != "gemini-weekly" {
+		t.Fatalf("display name = %q, want gemini-weekly", got)
+	}
+}
+
 func TestFormatResetUsesRelativeDaysForWeeklyWindow(t *testing.T) {
 	now := time.Date(2026, time.August, 30, 10, 0, 0, 0, time.UTC)
 	reset := now.Add(6*24*time.Hour + 10*time.Hour + 25*time.Minute)

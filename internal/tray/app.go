@@ -375,14 +375,26 @@ func formatWindow(status model.ProviderStatus, kind model.WindowKind, now time.T
 	if !exists {
 		return fmt.Sprintf("  %s —", kind.DisplayName())
 	}
+	return formatQuotaWindow(window, now)
+}
+
+func windowRows(status model.ProviderStatus, now time.Time) []string {
+	rows := make([]string, 0, len(status.Windows))
+	for _, window := range status.Windows {
+		rows = append(rows, formatQuotaWindow(window, now))
+	}
+	return rows
+}
+
+func formatQuotaWindow(window model.Window, now time.Time) string {
 	if !window.ResetsAt.After(now) {
-		return fmt.Sprintf("⚪ %s · waiting for new data", kind.DisplayName())
+		return fmt.Sprintf("⚪ %s · waiting for new data", window.DisplayName())
 	}
 	remaining := window.RemainingPercent()
 	return fmt.Sprintf(
 		"%s %s · %d%% left · %s",
 		model.SeverityForRemaining(remaining).Emoji(),
-		kind.DisplayName(),
+		window.DisplayName(),
 		window.RoundedRemainingPercent(),
 		model.FormatReset(now, window.ResetsAt),
 	)
