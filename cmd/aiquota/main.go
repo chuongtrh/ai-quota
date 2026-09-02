@@ -7,6 +7,7 @@ import (
 
 	"github.com/chuongtrh/ai-quota/internal/appcore"
 	"github.com/chuongtrh/ai-quota/internal/config"
+	"github.com/chuongtrh/ai-quota/internal/provider/antigravity"
 	"github.com/chuongtrh/ai-quota/internal/provider/claude"
 	"github.com/chuongtrh/ai-quota/internal/tray"
 )
@@ -20,6 +21,11 @@ func main() {
 	}
 	if len(os.Args) > 1 {
 		switch os.Args[1] {
+		case antigravity.BridgeFlag:
+			if err := antigravity.RunBridge(paths, os.Stdin, os.Stdout); err != nil {
+				os.Exit(1)
+			}
+			return
 		case claude.BridgeFlag:
 			if err := claude.RunBridge(paths, os.Stdin, os.Stdout); err != nil {
 				// Claude Code still receives a useful status line; the failure is signaled by the exit code.
@@ -41,8 +47,9 @@ func main() {
 
 	runtime.LockOSThread()
 	service := appcore.New(paths, version)
-	installer := claude.Installer{Paths: paths, Executable: executable}
-	tray.New(service, installer, version).Run()
+	claudeInstaller := claude.Installer{Paths: paths, Executable: executable}
+	antigravityInstaller := antigravity.Installer{Paths: paths, Executable: executable}
+	tray.New(service, claudeInstaller, antigravityInstaller, version).Run()
 }
 
 func fatal(err error) {

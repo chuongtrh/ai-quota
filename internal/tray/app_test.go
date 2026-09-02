@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"testing"
 	"time"
 
@@ -34,6 +35,18 @@ func TestMostUrgentRemainingIgnoresHiddenProviders(t *testing.T) {
 	remaining, ok := mostUrgentRemaining(statuses, visible, now)
 	if !ok || remaining != 60 {
 		t.Fatalf("remaining = %d, ok = %v; want 60, true", remaining, ok)
+	}
+}
+
+func TestProviderOrderIncludesAntigravity(t *testing.T) {
+	want := []model.Provider{model.ProviderCodex, model.ProviderClaudeCode, model.ProviderAntigravity}
+	if len(providerOrder) != len(want) {
+		t.Fatalf("providerOrder = %#v", providerOrder)
+	}
+	for index := range want {
+		if providerOrder[index] != want[index] {
+			t.Fatalf("providerOrder[%d] = %q, want %q", index, providerOrder[index], want[index])
+		}
 	}
 }
 
@@ -117,5 +130,69 @@ func TestWindowRowsReturnsNormalizedOrder(t *testing.T) {
 	}
 	if rows[1] != "🟢 Gemini Weekly · 75% left · resets in 2h 00m" {
 		t.Fatalf("second row = %q", rows[1])
+	}
+}
+
+func TestAntigravityQuotaRowsIncludeEveryBucket(t *testing.T) {
+	now := time.Date(2026, 9, 2, 10, 0, 0, 0, time.UTC)
+	status := model.ProviderStatus{
+		Provider: model.ProviderAntigravity,
+		Windows: []model.Window{
+			{Kind: "claude-daily", Label: "Claude Daily", UsedPercent: 50, ResetsAt: now.Add(time.Hour)},
+			{Kind: "gemini-weekly", Label: "Gemini Weekly", UsedPercent: 25, ResetsAt: now.Add(7 * 24 * time.Hour)},
+		},
+	}
+	status.Normalize()
+	rows := quotaRowsForProvider(status, now)
+	if len(rows) != 2 || rows[0] == rows[1] {
+		t.Fatalf("rows = %#v", rows)
+	}
+}
+
+func TestStatusLineProviderVisibilityRequiresConnection(t *testing.T) {
+	status := model.ProviderStatus{
+		Provider: model.ProviderAntigravity,
+		Windows:  []model.Window{{Kind: "gemini-weekly", ResetsAt: time.Now().Add(time.Hour)}},
+	}
+	if providerVisible(status, false, nil) {
+		t.Fatal("disconnected Antigravity status is visible")
+	}
+	if providerVisible(status, true, errors.New("settings unavailable")) {
+		t.Fatal("Antigravity status with settings error is visible")
+	}
+	if !providerVisible(status, true, nil) {
+		t.Fatal("connected Antigravity status is hidden")
+	}
+}
+
+func TestAntigravityProviderMenuStates(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      model.ProviderStatus
+		connected   bool
+		settingsErr error
+		wantStatus  string
+		wantAction  string
+	}{
+		{name: "disabled", wantStatus: "⚪ Tracking disabled", wantAction: "Enable tracking"},
+		{name: "settings error", settingsErr: errors.New("bad settings"), wantStatus: "⚠️ Settings unavailable", wantAction: "Enable tracking"},
+		{name: "waiting", connected: true, wantStatus: "⏳ Waiting for quota data", wantAction: "Disable tracking"},
+		{
+			name:      "active",
+			connected: true,
+			status: model.ProviderStatus{Windows: []model.Window{
+				{Kind: "gemini-weekly", ResetsAt: time.Now().Add(time.Hour)},
+			}},
+			wantStatus: "🟢 Tracking active",
+			wantAction: "Disable tracking",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := statusLineProviderMenuState(model.ProviderAntigravity, test.status, test.connected, test.settingsErr)
+			if state.statusTitle != test.wantStatus || state.actionTitle != test.wantAction {
+				t.Fatalf("state = %#v", state)
+			}
+		})
 	}
 }

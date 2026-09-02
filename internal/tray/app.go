@@ -12,18 +12,21 @@ import (
 	appicon "github.com/chuongtrh/ai-quota/internal/icon"
 	"github.com/chuongtrh/ai-quota/internal/model"
 	"github.com/chuongtrh/ai-quota/internal/notify"
+	"github.com/chuongtrh/ai-quota/internal/provider/antigravity"
 	"github.com/chuongtrh/ai-quota/internal/provider/claude"
 )
 
 type App struct {
-	service          *appcore.Service
-	installer        claude.Installer
-	claudeConnection connectionStateCache
-	version          string
-	ctx              context.Context
-	cancel           context.CancelFunc
+	service               *appcore.Service
+	claudeInstaller       claude.Installer
+	antigravityInstaller  antigravity.Installer
+	claudeConnection      connectionStateCache
+	antigravityConnection connectionStateCache
+	version               string
+	ctx                   context.Context
+	cancel                context.CancelFunc
 
-	quotaItems    map[model.Provider]providerQuotaItems
+	quotaItems    map[model.Provider]*providerQuotaItems
 	providerItems map[model.Provider]providerControlItems
 	waiting       *systray.MenuItem
 	updated       *systray.MenuItem
@@ -53,21 +56,32 @@ func (c *connectionStateCache) Get(force bool) (bool, error) {
 }
 
 type providerQuotaItems struct {
-	header  *systray.MenuItem
-	session *systray.MenuItem
-	weekly  *systray.MenuItem
+	header *systray.MenuItem
+	rows   []*systray.MenuItem
 }
 
-func (items providerQuotaItems) Show() {
+func (items *providerQuotaItems) Show() {
 	items.header.Show()
-	items.session.Show()
-	items.weekly.Show()
 }
 
-func (items providerQuotaItems) Hide() {
+func (items *providerQuotaItems) Hide() {
 	items.header.Hide()
-	items.session.Hide()
-	items.weekly.Hide()
+}
+
+func (items *providerQuotaItems) SetRows(titles []string) {
+	for len(items.rows) < len(titles) {
+		row := items.header.AddSubMenuItem("—", "")
+		row.Disable()
+		items.rows = append(items.rows, row)
+	}
+	for index, row := range items.rows {
+		if index < len(titles) {
+			row.SetTitle(titles[index])
+			row.Show()
+		} else {
+			row.Hide()
+		}
+	}
 }
 
 type providerControlItems struct {
@@ -78,22 +92,34 @@ type providerControlItems struct {
 var providerOrder = []model.Provider{
 	model.ProviderCodex,
 	model.ProviderClaudeCode,
+	model.ProviderAntigravity,
 }
 
-func New(service *appcore.Service, installer claude.Installer, version string) *App {
+func New(
+	service *appcore.Service,
+	claudeInstaller claude.Installer,
+	antigravityInstaller antigravity.Installer,
+	version string,
+) *App {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
-		service:   service,
-		installer: installer,
+		service:              service,
+		claudeInstaller:      claudeInstaller,
+		antigravityInstaller: antigravityInstaller,
 		claudeConnection: connectionStateCache{
-			check:    installer.IsConnected,
+			check:    claudeInstaller.IsConnected,
+			interval: time.Minute,
+			now:      time.Now,
+		},
+		antigravityConnection: connectionStateCache{
+			check:    antigravityInstaller.IsConnected,
 			interval: time.Minute,
 			now:      time.Now,
 		},
 		version:       version,
 		ctx:           ctx,
 		cancel:        cancel,
-		quotaItems:    make(map[model.Provider]providerQuotaItems),
+		quotaItems:    make(map[model.Provider]*providerQuotaItems),
 		providerItems: make(map[model.Provider]providerControlItems),
 	}
 }
@@ -106,14 +132,12 @@ func (a *App) onReady() {
 	trayIcon := appicon.TrayPNG(36)
 	systray.SetTemplateIcon(trayIcon, trayIcon)
 	systray.SetTitle("🤖 —")
-	systray.SetTooltip("AI quota · Codex and Claude Code")
+	systray.SetTooltip("AI quota · Codex, Claude Code, and Google Antigravity")
 	systray.SetRemovalAllowed(false)
 
 	for _, provider := range providerOrder {
-		items := providerQuotaItems{
-			header:  disabledItem(provider.DisplayName()),
-			session: disabledItem("  Session —"),
-			weekly:  disabledItem("  Weekly —"),
+		items := &providerQuotaItems{
+			header: systray.AddMenuItem(provider.DisplayName(), provider.DisplayName()+" quota windows"),
 		}
 		items.Hide()
 		a.quotaItems[provider] = items
@@ -160,6 +184,8 @@ func (a *App) eventLoop() {
 			go a.service.Refresh(a.ctx)
 		case <-a.providerItems[model.ProviderClaudeCode].action.ClickedCh:
 			a.toggleClaudeTracking()
+		case <-a.providerItems[model.ProviderAntigravity].action.ClickedCh:
+			a.toggleAntigravityTracking()
 		case <-a.quit.ClickedCh:
 			systray.Quit()
 		}
@@ -169,20 +195,26 @@ func (a *App) eventLoop() {
 func (a *App) updateMenu() {
 	statuses := a.service.Statuses()
 	claudeConnected, claudeSettingsErr := a.claudeConnection.Get(false)
+	antigravityConnected, antigravitySettingsErr := a.antigravityConnection.Get(false)
 	visibleProviders := make(map[model.Provider]bool, len(providerOrder))
 	visibleCount := 0
 	for _, provider := range providerOrder {
-		visible := len(statuses[provider].Windows) > 0
-		if provider == model.ProviderClaudeCode {
-			visible = visible && claudeSettingsErr == nil && claudeConnected
+		connected := true
+		var settingsErr error
+		switch provider {
+		case model.ProviderClaudeCode:
+			connected, settingsErr = claudeConnected, claudeSettingsErr
+		case model.ProviderAntigravity:
+			connected, settingsErr = antigravityConnected, antigravitySettingsErr
 		}
+		visible := providerVisible(statuses[provider], connected, settingsErr)
 		visibleProviders[provider] = visible
 		if a.updateProvider(statuses[provider], a.quotaItems[provider], visible) {
 			visibleCount++
 		}
 	}
 	if visibleCount == 0 {
-		if claudeConnected && claudeSettingsErr == nil {
+		if claudeConnected && claudeSettingsErr == nil || antigravityConnected && antigravitySettingsErr == nil {
 			a.waiting.SetTitle("⏳ Waiting for quota data")
 		} else {
 			a.waiting.SetTitle("⏳ Waiting for provider setup")
@@ -215,12 +247,13 @@ func (a *App) updateMenu() {
 	}
 
 	a.updateCodexProviderMenu(statuses[model.ProviderCodex])
-	a.updateClaudeProviderMenu(statuses[model.ProviderClaudeCode], claudeConnected, claudeSettingsErr)
+	a.updateStatusLineProviderMenu(model.ProviderClaudeCode, statuses[model.ProviderClaudeCode], claudeConnected, claudeSettingsErr)
+	a.updateStatusLineProviderMenu(model.ProviderAntigravity, statuses[model.ProviderAntigravity], antigravityConnected, antigravitySettingsErr)
 }
 
 func (a *App) updateProvider(
 	status model.ProviderStatus,
-	items providerQuotaItems,
+	items *providerQuotaItems,
 	visible bool,
 ) bool {
 	if !visible {
@@ -236,8 +269,7 @@ func (a *App) updateProvider(
 		headerTitle = "⚠️ " + headerTitle
 	}
 	items.header.SetTitle(headerTitle)
-	items.session.SetTitle(formatWindow(status, model.WindowSession, time.Now()))
-	items.weekly.SetTitle(formatWindow(status, model.WindowWeekly, time.Now()))
+	items.SetRows(quotaRowsForProvider(status, time.Now()))
 	return true
 }
 
@@ -248,13 +280,13 @@ func (a *App) toggleClaudeTracking() {
 		return
 	}
 	if connected {
-		err = a.installer.Disconnect()
+		err = a.claudeInstaller.Disconnect()
 		if err == nil {
 			a.service.ClearProvider(model.ProviderClaudeCode)
 			_ = notify.Send("AI quota", "Claude Code tracking was disabled and its previous status line was restored.")
 		}
 	} else {
-		err = a.installer.Connect()
+		err = a.claudeInstaller.Connect()
 		if err == nil {
 			a.service.ClearProvider(model.ProviderClaudeCode)
 			_ = notify.Send("AI quota", "Claude Code tracking is enabled. Send a prompt to receive the latest quota data.")
@@ -268,6 +300,36 @@ func (a *App) toggleClaudeTracking() {
 		_ = notify.Send("⚠️ Could not update Claude Code tracking", message)
 	}
 	_, _ = a.claudeConnection.Get(true)
+	a.updateMenu()
+}
+
+func (a *App) toggleAntigravityTracking() {
+	connected, err := a.antigravityConnection.Get(true)
+	if err != nil {
+		_ = notify.Send("⚠️ Could not read Google Antigravity CLI settings", err.Error())
+		return
+	}
+	if connected {
+		err = a.antigravityInstaller.Disconnect()
+		if err == nil {
+			a.service.ClearProvider(model.ProviderAntigravity)
+			_ = notify.Send("AI quota", "Google Antigravity CLI tracking was disabled and its previous status line was restored.")
+		}
+	} else {
+		err = a.antigravityInstaller.Connect()
+		if err == nil {
+			a.service.ClearProvider(model.ProviderAntigravity)
+			_ = notify.Send("AI quota", "Google Antigravity CLI tracking is enabled. Send a prompt to receive the latest quota data.")
+		}
+	}
+	if err != nil {
+		message := err.Error()
+		if errors.Is(err, antigravity.ErrSettingsChanged) {
+			message = "The status line changed after tracking was enabled. AI quota will not overwrite the current settings."
+		}
+		_ = notify.Send("⚠️ Could not update Google Antigravity CLI tracking", message)
+	}
+	_, _ = a.antigravityConnection.Get(true)
 	a.updateMenu()
 }
 
@@ -291,34 +353,49 @@ func (a *App) updateCodexProviderMenu(status model.ProviderStatus) {
 	}
 }
 
-func (a *App) updateClaudeProviderMenu(status model.ProviderStatus, connected bool, settingsErr error) {
-	items := a.providerItems[model.ProviderClaudeCode]
+func (a *App) updateStatusLineProviderMenu(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) {
+	items := a.providerItems[provider]
+	state := statusLineProviderMenuState(provider, status, connected, settingsErr)
+	items.status.SetTitle(state.statusTitle)
+	items.status.SetTooltip(state.statusTooltip)
+	items.action.SetTitle(state.actionTitle)
+	items.action.SetTooltip(state.actionTooltip)
+}
+
+type providerMenuState struct {
+	statusTitle   string
+	statusTooltip string
+	actionTitle   string
+	actionTooltip string
+}
+
+func statusLineProviderMenuState(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) providerMenuState {
+	connector := "Install the official " + provider.DisplayName() + " status line connector"
 	if settingsErr != nil {
-		items.status.SetTitle("⚠️ Settings unavailable")
-		items.status.SetTooltip(settingsErr.Error())
-		items.action.SetTitle("Enable tracking")
-		items.action.SetTooltip("Install the official Claude Code status line connector")
-		return
+		return providerMenuState{
+			statusTitle: "⚠️ Settings unavailable", statusTooltip: settingsErr.Error(),
+			actionTitle: "Enable tracking", actionTooltip: connector,
+		}
 	}
 	if !connected {
-		items.status.SetTitle("⚪ Tracking disabled")
-		items.status.SetTooltip("Claude Code quota tracking is not configured")
-		items.action.SetTitle("Enable tracking")
-		items.action.SetTooltip("Install the official Claude Code status line connector")
-		return
+		return providerMenuState{
+			statusTitle: "⚪ Tracking disabled", statusTooltip: provider.DisplayName() + " quota tracking is not configured",
+			actionTitle: "Enable tracking", actionTooltip: connector,
+		}
 	}
-	if len(status.Windows) == 0 {
-		items.status.SetTitle("⏳ Waiting for quota data")
-		items.status.SetTooltip("Send a Claude Code prompt to receive quota data")
-	} else if status.Error != "" {
-		items.status.SetTitle("🟡 Showing cached quota")
-		items.status.SetTooltip(status.Error)
-	} else {
-		items.status.SetTitle("🟢 Tracking active")
-		items.status.SetTooltip("Claude Code quota data is available")
+	state := providerMenuState{actionTitle: "Disable tracking", actionTooltip: "Restore the previous " + provider.DisplayName() + " status line"}
+	switch {
+	case len(status.Windows) == 0:
+		state.statusTitle = "⏳ Waiting for quota data"
+		state.statusTooltip = "Send a " + provider.DisplayName() + " prompt to receive quota data"
+	case status.Error != "":
+		state.statusTitle = "🟡 Showing cached quota"
+		state.statusTooltip = status.Error
+	default:
+		state.statusTitle = "🟢 Tracking active"
+		state.statusTooltip = provider.DisplayName() + " quota data is available"
 	}
-	items.action.SetTitle("Disable tracking")
-	items.action.SetTooltip("Restore the previous Claude Code status line")
+	return state
 }
 
 func initialProviderAction(provider model.Provider) string {
@@ -360,6 +437,10 @@ func mostUrgentRemaining(
 	return minimum, found
 }
 
+func providerVisible(status model.ProviderStatus, connected bool, settingsErr error) bool {
+	return len(status.Windows) > 0 && connected && settingsErr == nil
+}
+
 func (a *App) onExit() {
 	a.cancel()
 }
@@ -384,6 +465,16 @@ func windowRows(status model.ProviderStatus, now time.Time) []string {
 		rows = append(rows, formatQuotaWindow(window, now))
 	}
 	return rows
+}
+
+func quotaRowsForProvider(status model.ProviderStatus, now time.Time) []string {
+	if status.Provider == model.ProviderAntigravity {
+		return windowRows(status, now)
+	}
+	return []string{
+		formatWindow(status, model.WindowSession, now),
+		formatWindow(status, model.WindowWeekly, now),
+	}
 }
 
 func formatQuotaWindow(window model.Window, now time.Time) string {
