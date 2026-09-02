@@ -10,8 +10,9 @@ import (
 type Provider string
 
 const (
-	ProviderCodex      Provider = "codex"
-	ProviderClaudeCode Provider = "claude-code"
+	ProviderCodex       Provider = "codex"
+	ProviderClaudeCode  Provider = "claude-code"
+	ProviderAntigravity Provider = "antigravity"
 )
 
 func (p Provider) DisplayName() string {
@@ -20,6 +21,8 @@ func (p Provider) DisplayName() string {
 		return "Codex"
 	case ProviderClaudeCode:
 		return "Claude Code"
+	case ProviderAntigravity:
+		return "Google Antigravity"
 	default:
 		return string(p)
 	}

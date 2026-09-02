@@ -40,6 +40,10 @@ func (p Paths) ClaudeCache() string {
 	return filepath.Join(p.DataDir, "claude-quota.json")
 }
 
+func (p Paths) AntigravityCache() string {
+	return filepath.Join(p.DataDir, "antigravity-quota.json")
+}
+
 func (p Paths) AlertState() string {
 	return filepath.Join(p.DataDir, "alert-state.json")
 }
@@ -54,4 +58,16 @@ func (p Paths) ClaudeHelper() string {
 
 func (p Paths) ClaudeSettings() string {
 	return filepath.Join(p.HomeDir, ".claude", "settings.json")
+}
+
+func (p Paths) AntigravitySettings() string {
+	return filepath.Join(p.HomeDir, ".gemini", "antigravity-cli", "settings.json")
+}
+
+func (p Paths) AntigravityStatusLineBackup() string {
+	return filepath.Join(p.DataDir, "antigravity-statusline-backup.json")
+}
+
+func (p Paths) AntigravityHelper() string {
+	return filepath.Join(p.DataDir, "bin", "aiquota-antigravity-bridge")
 }
