@@ -149,7 +149,7 @@ func (a *App) onReady() {
 	a.refresh = systray.AddMenuItem("↻ Refresh now", "Fetch the latest quota data")
 	providers := systray.AddMenuItem("🧩 Providers", "Manage quota tracking providers")
 	for _, provider := range providerOrder {
-		providerMenu := providers.AddSubMenuItem(provider.DisplayName(), "Manage "+provider.DisplayName()+" quota tracking")
+		providerMenu := providers.AddSubMenuItem(provider.DisplayName(), "")
 		status := providerMenu.AddSubMenuItem("⏳ Checking status", "")
 		status.Disable()
 		action := providerMenu.AddSubMenuItem(initialProviderAction(provider), initialProviderActionTooltip(provider))
@@ -207,7 +207,7 @@ func (a *App) updateMenu() {
 		case model.ProviderAntigravity:
 			connected, settingsErr = antigravityConnected, antigravitySettingsErr
 		}
-		visible := providerVisible(statuses[provider], connected, settingsErr)
+		visible := providerVisible(provider, statuses[provider], connected, settingsErr)
 		visibleProviders[provider] = visible
 		if a.updateProvider(statuses[provider], a.quotaItems[provider], visible) {
 			visibleCount++
@@ -289,6 +289,7 @@ func (a *App) toggleClaudeTracking() {
 		err = a.claudeInstaller.Connect()
 		if err == nil {
 			a.service.ClearProvider(model.ProviderClaudeCode)
+			go a.service.Refresh(a.ctx)
 			_ = notify.Send("AI quota", "Claude Code tracking is enabled. Send a prompt to receive the latest quota data.")
 		}
 	}
@@ -319,7 +320,8 @@ func (a *App) toggleAntigravityTracking() {
 		err = a.antigravityInstaller.Connect()
 		if err == nil {
 			a.service.ClearProvider(model.ProviderAntigravity)
-			_ = notify.Send("AI quota", "Google Antigravity CLI tracking is enabled. Send a prompt to receive the latest quota data.")
+			go a.service.Refresh(a.ctx)
+			_ = notify.Send("AI quota", "Google Antigravity tracking is enabled.")
 		}
 	}
 	if err != nil {
@@ -437,8 +439,11 @@ func mostUrgentRemaining(
 	return minimum, found
 }
 
-func providerVisible(status model.ProviderStatus, connected bool, settingsErr error) bool {
-	return len(status.Windows) > 0 && connected && settingsErr == nil
+func providerVisible(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) bool {
+	if provider == model.ProviderCodex {
+		return len(status.Windows) > 0
+	}
+	return connected && settingsErr == nil
 }
 
 func (a *App) onExit() {
@@ -468,6 +473,12 @@ func windowRows(status model.ProviderStatus, now time.Time) []string {
 }
 
 func quotaRowsForProvider(status model.ProviderStatus, now time.Time) []string {
+	if len(status.Windows) == 0 {
+		if status.Error != "" {
+			return []string{"⚠️ " + status.Error}
+		}
+		return []string{"⏳ Waiting for quota data"}
+	}
 	if status.Provider == model.ProviderAntigravity {
 		return windowRows(status, now)
 	}

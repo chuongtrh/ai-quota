@@ -154,14 +154,28 @@ func TestStatusLineProviderVisibilityRequiresConnection(t *testing.T) {
 		Provider: model.ProviderAntigravity,
 		Windows:  []model.Window{{Kind: "gemini-weekly", ResetsAt: time.Now().Add(time.Hour)}},
 	}
-	if providerVisible(status, false, nil) {
+	if providerVisible(model.ProviderAntigravity, status, false, nil) {
 		t.Fatal("disconnected Antigravity status is visible")
 	}
-	if providerVisible(status, true, errors.New("settings unavailable")) {
+	if providerVisible(model.ProviderAntigravity, status, true, errors.New("settings unavailable")) {
 		t.Fatal("Antigravity status with settings error is visible")
 	}
-	if !providerVisible(status, true, nil) {
+	if !providerVisible(model.ProviderAntigravity, status, true, nil) {
 		t.Fatal("connected Antigravity status is hidden")
+	}
+	// Even with empty windows, connected provider should be visible in menu
+	empty := model.ProviderStatus{Provider: model.ProviderAntigravity}
+	if !providerVisible(model.ProviderAntigravity, empty, true, nil) {
+		t.Fatal("connected Antigravity without windows is hidden")
+	}
+}
+
+func TestQuotaRowsWaitingWhenEmpty(t *testing.T) {
+	now := time.Now()
+	status := model.ProviderStatus{Provider: model.ProviderAntigravity}
+	rows := quotaRowsForProvider(status, now)
+	if len(rows) != 1 || rows[0] != "⏳ Waiting for quota data" {
+		t.Fatalf("rows = %#v; want ⏳ Waiting for quota data", rows)
 	}
 }
 
