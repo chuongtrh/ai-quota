@@ -32,9 +32,9 @@ func TestMostUrgentRemainingIgnoresHiddenProviders(t *testing.T) {
 		model.ProviderCodex:      true,
 		model.ProviderClaudeCode: false,
 	}
-	remaining, ok := mostUrgentRemaining(statuses, visible, now)
-	if !ok || remaining != 60 {
-		t.Fatalf("remaining = %d, ok = %v; want 60, true", remaining, ok)
+	remaining, provider, ok := mostUrgentRemaining(statuses, visible, now)
+	if !ok || remaining != 60 || provider != model.ProviderCodex {
+		t.Fatalf("remaining = %d, provider = %v, ok = %v; want 60, %v, true", remaining, provider, ok, model.ProviderCodex)
 	}
 }
 
@@ -109,8 +109,9 @@ func TestFormatCustomWindowUsesLabel(t *testing.T) {
 		UsedPercent: 25,
 		ResetsAt:    now.Add(2 * time.Hour),
 	}
-	if got := formatQuotaWindow(window, now); got != "🟢 Gemini Weekly · 75% left · resets in 2h 00m" {
-		t.Fatalf("formatted window = %q", got)
+	want := "Gemini Weekly\t\t\u200775% left · resets in 2h 00m"
+	if got := formatQuotaWindow(window, now); got.text != want {
+		t.Fatalf("formatted window = %q; want %q", got.text, want)
 	}
 }
 
@@ -125,11 +126,11 @@ func TestWindowRowsReturnsNormalizedOrder(t *testing.T) {
 	if len(rows) != 2 {
 		t.Fatalf("rows = %#v; want two", rows)
 	}
-	if rows[0] != "🟢 Session · 60% left · resets in 1h 00m" {
-		t.Fatalf("first row = %q", rows[0])
+	if want := "Session\t\t\t\t\u200760% left · resets in 1h 00m"; rows[0].text != want {
+		t.Fatalf("first row = %q; want %q", rows[0].text, want)
 	}
-	if rows[1] != "🟢 Gemini Weekly · 75% left · resets in 2h 00m" {
-		t.Fatalf("second row = %q", rows[1])
+	if want := "Gemini Weekly\t\t\u200775% left · resets in 2h 00m"; rows[1].text != want {
+		t.Fatalf("second row = %q; want %q", rows[1].text, want)
 	}
 }
 
@@ -174,8 +175,8 @@ func TestQuotaRowsWaitingWhenEmpty(t *testing.T) {
 	now := time.Now()
 	status := model.ProviderStatus{Provider: model.ProviderAntigravity}
 	rows := quotaRowsForProvider(status, now)
-	if len(rows) != 1 || rows[0] != "⏳ Waiting for quota data" {
-		t.Fatalf("rows = %#v; want ⏳ Waiting for quota data", rows)
+	if len(rows) != 1 || rows[0].text != "Waiting for quota data" {
+		t.Fatalf("rows = %#v; want Waiting for quota data", rows)
 	}
 }
 

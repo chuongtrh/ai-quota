@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"fyne.io/systray"
@@ -58,6 +59,14 @@ func (c *connectionStateCache) Get(force bool) (bool, error) {
 	return c.connected, c.err
 }
 
+const maxQuotaRowsPerProvider = 8
+
+type quotaRow struct {
+	text     string
+	severity model.Severity
+	active   bool
+}
+
 type providerQuotaItems struct {
 	header *systray.MenuItem
 	rows   []*systray.MenuItem
@@ -69,17 +78,17 @@ func (items *providerQuotaItems) Show() {
 
 func (items *providerQuotaItems) Hide() {
 	items.header.Hide()
+	for _, row := range items.rows {
+		row.Hide()
+	}
 }
 
-func (items *providerQuotaItems) SetRows(titles []string) {
-	for len(items.rows) < len(titles) {
-		row := items.header.AddSubMenuItem("—", "")
-		row.Disable()
-		items.rows = append(items.rows, row)
-	}
+func (items *providerQuotaItems) SetRows(rows []quotaRow) {
 	for index, row := range items.rows {
-		if index < len(titles) {
-			row.SetTitle(titles[index])
+		if index < len(rows) {
+			r := rows[index]
+			row.SetTitle(r.text)
+			row.SetIcon(appicon.StatusDotPNG(32, r.severity, r.active))
 			row.Show()
 		} else {
 			row.Hide()
@@ -141,13 +150,19 @@ func (a *App) Run() {
 func (a *App) onReady() {
 	trayIcon := appicon.TrayPNG(36)
 	systray.SetTemplateIcon(trayIcon, trayIcon)
-	systray.SetTitle("🤖 —")
-	systray.SetTooltip("AI quota · Codex, Claude Code, and Google Antigravity")
+	systray.SetTitle("—")
+	systray.SetTooltip("AI quota")
 	systray.SetRemovalAllowed(false)
 
 	for _, provider := range providerOrder {
+		header := disabledItem(provider.DisplayName())
 		items := &providerQuotaItems{
-			header: systray.AddMenuItem(provider.DisplayName(), ""),
+			header: header,
+		}
+		for i := 0; i < maxQuotaRowsPerProvider; i++ {
+			row := systray.AddMenuItem("—", "")
+			row.Hide()
+			items.rows = append(items.rows, row)
 		}
 		items.Hide()
 		a.quotaItems[provider] = items
@@ -168,6 +183,21 @@ func (a *App) onReady() {
 	systray.AddSeparator()
 	disabledItem("ℹ️ Version " + a.version)
 	a.quit = systray.AddMenuItem("⏻ Quit", "Quit AI quota")
+
+	for _, items := range a.quotaItems {
+		for _, row := range items.rows {
+			go func(ch chan struct{}) {
+				for {
+					select {
+					case <-a.ctx.Done():
+						return
+					case <-ch:
+						go a.service.Refresh(a.ctx)
+					}
+				}
+			}(row.ClickedCh)
+		}
+	}
 
 	notify.RequestPermission()
 	go a.service.Refresh(a.ctx)
@@ -226,6 +256,7 @@ func (a *App) updateMenu() {
 			visibleCount++
 		}
 	}
+
 	if visibleCount == 0 {
 		if codexConnected && codexSettingsErr == nil || claudeConnected && claudeSettingsErr == nil || antigravityConnected && antigravitySettingsErr == nil {
 			a.waiting.SetTitle("⏳ Waiting for quota data")
@@ -237,12 +268,41 @@ func (a *App) updateMenu() {
 		a.waiting.Hide()
 	}
 
-	if remaining, ok := mostUrgentRemaining(statuses, visibleProviders, time.Now()); ok {
+	if remaining, provider, ok := mostUrgentRemaining(statuses, visibleProviders, time.Now()); ok {
 		severity := model.SeverityForRemaining(float64(remaining))
-		systray.SetTitle(fmt.Sprintf("%s %d%%", severity.Emoji(), remaining))
+		systray.SetIcon(appicon.TrayColorPNG(36, severity, true))
+
+		providerName := provider.DisplayName()
+		if provider == model.ProviderAntigravity {
+			providerName = "Antigravity"
+		}
+		systray.SetTitle(fmt.Sprintf("%s %d%%", providerName, remaining))
 	} else {
-		systray.SetTitle("🤖 —")
+		systray.SetIcon(appicon.TrayColorPNG(36, model.SeverityHealthy, false))
+		systray.SetTitle("—")
 	}
+
+	var tooltipLines []string
+	tooltipLines = append(tooltipLines, "AI quota")
+	for _, provider := range providerOrder {
+		if !visibleProviders[provider] {
+			continue
+		}
+		status := statuses[provider]
+		minP := -1
+		for _, w := range status.Windows {
+			if w.ResetsAt.After(time.Now()) {
+				r := w.RoundedRemainingPercent()
+				if minP == -1 || r < minP {
+					minP = r
+				}
+			}
+		}
+		if minP >= 0 {
+			tooltipLines = append(tooltipLines, fmt.Sprintf("%s: %d%%", provider.DisplayName(), minP))
+		}
+	}
+	systray.SetTooltip(strings.Join(tooltipLines, "\n"))
 
 	latest := time.Time{}
 	for provider, status := range statuses {
@@ -432,13 +492,15 @@ func mostUrgentRemaining(
 	statuses map[model.Provider]model.ProviderStatus,
 	visible map[model.Provider]bool,
 	now time.Time,
-) (int, bool) {
+) (int, model.Provider, bool) {
 	minimum := 101
+	var urgentProvider model.Provider
 	found := false
-	for provider, status := range statuses {
+	for _, provider := range providerOrder {
 		if !visible[provider] {
 			continue
 		}
+		status := statuses[provider]
 		for _, window := range status.Windows {
 			if !window.ResetsAt.After(now) {
 				continue
@@ -446,11 +508,12 @@ func mostUrgentRemaining(
 			remaining := window.RoundedRemainingPercent()
 			if remaining < minimum {
 				minimum = remaining
+				urgentProvider = provider
 				found = true
 			}
 		}
 	}
-	return minimum, found
+	return minimum, urgentProvider, found
 }
 
 func providerVisible(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) bool {
@@ -467,50 +530,85 @@ func disabledItem(title string) *systray.MenuItem {
 	return item
 }
 
-func formatWindow(status model.ProviderStatus, kind model.WindowKind, now time.Time) string {
+func tabPaddingForName(name string) string {
+	switch {
+	case strings.HasPrefix(name, "Claude") || len(name) >= 15:
+		return "\t"
+	case strings.HasPrefix(name, "Gemini") || len(name) >= 9:
+		return "\t\t"
+	default:
+		return "\t\t\t\t"
+	}
+}
+
+func formatPercentText(percent int) string {
+	if percent < 100 {
+		return fmt.Sprintf("\u2007%d%%", percent)
+	}
+	return fmt.Sprintf("%d%%", percent)
+}
+
+func formatWindow(status model.ProviderStatus, kind model.WindowKind, now time.Time) quotaRow {
+	name := kind.DisplayName()
+	tabs := tabPaddingForName(name)
 	window, exists := status.Window(kind)
 	if !exists {
-		return fmt.Sprintf("  %s —", kind.DisplayName())
+		return quotaRow{
+			text:     fmt.Sprintf("%s%s—", name, tabs),
+			severity: model.SeverityHealthy,
+			active:   false,
+		}
 	}
 	return formatQuotaWindow(window, now)
 }
 
-func windowRows(status model.ProviderStatus, now time.Time) []string {
-	rows := make([]string, 0, len(status.Windows))
+func windowRows(status model.ProviderStatus, now time.Time) []quotaRow {
+	rows := make([]quotaRow, 0, len(status.Windows))
 	for _, window := range status.Windows {
 		rows = append(rows, formatQuotaWindow(window, now))
 	}
 	return rows
 }
 
-func quotaRowsForProvider(status model.ProviderStatus, now time.Time) []string {
+func quotaRowsForProvider(status model.ProviderStatus, now time.Time) []quotaRow {
 	if len(status.Windows) == 0 {
 		if status.Error != "" {
-			return []string{"⚠️ " + status.Error}
+			return []quotaRow{{text: status.Error, severity: model.SeverityCritical, active: true}}
 		}
-		return []string{"⏳ Waiting for quota data"}
+		return []quotaRow{{text: "Waiting for quota data", severity: model.SeverityHealthy, active: false}}
 	}
 	if status.Provider == model.ProviderAntigravity {
 		return windowRows(status, now)
 	}
-	return []string{
+	return []quotaRow{
 		formatWindow(status, model.WindowSession, now),
 		formatWindow(status, model.WindowWeekly, now),
 	}
 }
 
-func formatQuotaWindow(window model.Window, now time.Time) string {
+func formatQuotaWindow(window model.Window, now time.Time) quotaRow {
+	name := window.DisplayName()
+	tabs := tabPaddingForName(name)
 	if !window.ResetsAt.After(now) {
-		return fmt.Sprintf("⚪ %s · waiting for new data", window.DisplayName())
+		return quotaRow{
+			text:     fmt.Sprintf("%s%swaiting for new data", name, tabs),
+			severity: model.SeverityHealthy,
+			active:   false,
+		}
 	}
 	remaining := window.RemainingPercent()
-	return fmt.Sprintf(
-		"%s %s · %d%% left · %s",
-		model.SeverityForRemaining(remaining).Emoji(),
-		window.DisplayName(),
-		window.RoundedRemainingPercent(),
-		model.FormatReset(now, window.ResetsAt),
-	)
+	severity := model.SeverityForRemaining(remaining)
+	return quotaRow{
+		text: fmt.Sprintf(
+			"%s%s%s left · %s",
+			name,
+			tabs,
+			formatPercentText(window.RoundedRemainingPercent()),
+			model.FormatReset(now, window.ResetsAt),
+		),
+		severity: severity,
+		active:   true,
+	}
 }
 
 func formatAgo(duration time.Duration) string {

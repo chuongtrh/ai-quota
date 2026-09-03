@@ -6,9 +6,15 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+
+	"github.com/chuongtrh/ai-quota/internal/model"
 )
 
 func TrayPNG(size int) []byte {
+	return TrayColorPNG(size, model.SeverityHealthy, false)
+}
+
+func TrayColorPNG(size int, severity model.Severity, active bool) []byte {
 	if size < 16 {
 		size = 16
 	}
@@ -16,19 +22,72 @@ func TrayPNG(size int) []byte {
 	center := float64(size-1) / 2
 	radius := float64(size) * 0.34
 	thickness := math.Max(1.5, float64(size)*0.085)
-	black := color.RGBA{R: 0, G: 0, B: 0, A: 255}
+
+	iconColor := color.RGBA{R: 142, G: 142, B: 147, A: 255}
+	if active {
+		switch severity {
+		case model.SeverityExhausted:
+			iconColor = color.RGBA{R: 215, G: 0, B: 21, A: 255}
+		case model.SeverityCritical:
+			iconColor = color.RGBA{R: 255, G: 69, B: 58, A: 255}
+		case model.SeverityWarning:
+			iconColor = color.RGBA{R: 255, G: 159, B: 10, A: 255}
+		default:
+			iconColor = color.RGBA{R: 50, G: 205, B: 90, A: 255}
+		}
+	}
 
 	for y := 0; y < size; y++ {
 		for x := 0; x < size; x++ {
 			distance := math.Hypot(float64(x)-center, float64(y)-center)
 			if math.Abs(distance-radius) <= thickness {
-				canvas.SetRGBA(x, y, black)
+				canvas.SetRGBA(x, y, iconColor)
 			}
 		}
 	}
-	drawLine(canvas, center, center, center+radius*0.62, center-radius*0.52, thickness, black)
-	drawCircle(canvas, center, center, thickness*1.2, black)
+	drawLine(canvas, center, center, center+radius*0.62, center-radius*0.52, thickness, iconColor)
+	drawCircle(canvas, center, center, thickness*1.2, iconColor)
 
+	var buffer bytes.Buffer
+	_ = png.Encode(&buffer, canvas)
+	return buffer.Bytes()
+}
+
+func StatusDotPNG(size int, severity model.Severity, active bool) []byte {
+	if size < 16 {
+		size = 32
+	}
+	canvas := image.NewRGBA(image.Rect(0, 0, size, size))
+	center := float64(size) / 2
+	radius := float64(size) * 0.21
+
+	dotColor := color.RGBA{R: 142, G: 142, B: 147, A: 255}
+	if active {
+		switch severity {
+		case model.SeverityExhausted:
+			dotColor = color.RGBA{R: 215, G: 0, B: 21, A: 255}
+		case model.SeverityCritical:
+			dotColor = color.RGBA{R: 255, G: 59, B: 48, A: 255}
+		case model.SeverityWarning:
+			dotColor = color.RGBA{R: 255, G: 149, B: 0, A: 255}
+		default:
+			dotColor = color.RGBA{R: 52, G: 199, B: 89, A: 255}
+		}
+	}
+
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			d := math.Hypot(float64(x)+0.5-center, float64(y)+0.5-center)
+			delta := radius - d
+			if delta >= 0.5 {
+				canvas.SetRGBA(x, y, dotColor)
+			} else if delta > -0.5 {
+				coverage := delta + 0.5
+				alpha := uint8(float64(dotColor.A) * coverage)
+				canvas.SetRGBA(x, y, color.RGBA{R: dotColor.R, G: dotColor.G, B: dotColor.B, A: alpha})
+			}
+		}
+	}
 	var buffer bytes.Buffer
 	_ = png.Encode(&buffer, canvas)
 	return buffer.Bytes()
