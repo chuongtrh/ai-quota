@@ -338,7 +338,7 @@ func (a *App) updateProvider(
 	if headerTitle == "" {
 		headerTitle = "—"
 	}
-	if status.Error != "" {
+	if status.Error != "" && !isWaitingForData(status) {
 		headerTitle = "⚠️ " + headerTitle
 	}
 	items.header.SetTitle(headerTitle)
@@ -570,9 +570,23 @@ func windowRows(status model.ProviderStatus, now time.Time) []quotaRow {
 	return rows
 }
 
+func isWaitingForData(status model.ProviderStatus) bool {
+	if len(status.Windows) > 0 {
+		return false
+	}
+	if status.Error == "" {
+		return true
+	}
+	errStr := strings.ToLower(status.Error)
+	return strings.Contains(errStr, "no active quota data") ||
+		strings.Contains(errStr, "tracking is disabled") ||
+		strings.Contains(errStr, "waiting for") ||
+		strings.Contains(errStr, "not sent quota data yet")
+}
+
 func quotaRowsForProvider(status model.ProviderStatus, now time.Time) []quotaRow {
 	if len(status.Windows) == 0 {
-		if status.Error != "" {
+		if status.Error != "" && !isWaitingForData(status) {
 			return []quotaRow{{text: status.Error, severity: model.SeverityCritical, active: true}}
 		}
 		return []quotaRow{{text: "Waiting for quota data", severity: model.SeverityHealthy, active: false}}

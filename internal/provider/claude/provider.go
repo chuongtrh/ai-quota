@@ -10,7 +10,7 @@ import (
 	"github.com/chuongtrh/ai-quota/internal/storage"
 )
 
-var ErrNoQuotaData = errors.New("Claude Code tracking is disabled or no active quota data is available")
+var ErrNoQuotaData = errors.New("Claude Code has not sent quota data yet; send at least one prompt first")
 
 type CacheProvider struct {
 	paths config.Paths

@@ -19,7 +19,7 @@ import (
 
 const BridgeFlag = "--antigravity-statusline"
 
-var ErrNoQuotaData = errors.New("Google Antigravity CLI tracking is disabled or no active quota data is available")
+var ErrNoQuotaData = errors.New("Google Antigravity CLI has not sent quota data yet; send at least one prompt first")
 
 type statusLineInput struct {
 	Quota map[string]quotaEntry `json:"quota"`
