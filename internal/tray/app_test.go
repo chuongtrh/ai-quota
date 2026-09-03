@@ -210,3 +210,34 @@ func TestAntigravityProviderMenuStates(t *testing.T) {
 		})
 	}
 }
+
+func TestCodexProviderMenuStates(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      model.ProviderStatus
+		connected   bool
+		settingsErr error
+		wantStatus  string
+		wantAction  string
+	}{
+		{name: "disabled", connected: false, wantStatus: "⚪ Tracking disabled", wantAction: "Enable tracking"},
+		{name: "waiting", connected: true, wantStatus: "⏳ Waiting for quota data", wantAction: "Disable tracking"},
+		{
+			name:      "active",
+			connected: true,
+			status: model.ProviderStatus{Windows: []model.Window{
+				{Kind: model.WindowSession, ResetsAt: time.Now().Add(time.Hour)},
+			}},
+			wantStatus: "🟢 Tracking active",
+			wantAction: "Disable tracking",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			state := statusLineProviderMenuState(model.ProviderCodex, test.status, test.connected, test.settingsErr)
+			if state.statusTitle != test.wantStatus || state.actionTitle != test.wantAction {
+				t.Fatalf("state = %#v", state)
+			}
+		})
+	}
+}

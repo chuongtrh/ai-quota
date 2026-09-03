@@ -36,6 +36,10 @@ func (p Paths) CodexCache() string {
 	return filepath.Join(p.DataDir, "codex-quota.json")
 }
 
+func (p Paths) CodexDisabled() string {
+	return filepath.Join(p.DataDir, "codex-disabled")
+}
+
 func (p Paths) ClaudeCache() string {
 	return filepath.Join(p.DataDir, "claude-quota.json")
 }

@@ -9,6 +9,7 @@ import (
 	"github.com/chuongtrh/ai-quota/internal/config"
 	"github.com/chuongtrh/ai-quota/internal/provider/antigravity"
 	"github.com/chuongtrh/ai-quota/internal/provider/claude"
+	"github.com/chuongtrh/ai-quota/internal/provider/codex"
 	"github.com/chuongtrh/ai-quota/internal/tray"
 )
 
@@ -47,9 +48,10 @@ func main() {
 
 	runtime.LockOSThread()
 	service := appcore.New(paths, version)
+	codexInstaller := codex.Installer{Paths: paths}
 	claudeInstaller := claude.Installer{Paths: paths, Executable: executable}
 	antigravityInstaller := antigravity.Installer{Paths: paths, Executable: executable}
-	tray.New(service, claudeInstaller, antigravityInstaller, version).Run()
+	tray.New(service, codexInstaller, claudeInstaller, antigravityInstaller, version).Run()
 }
 
 func fatal(err error) {

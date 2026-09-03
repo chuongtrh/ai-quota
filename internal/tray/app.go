@@ -14,12 +14,15 @@ import (
 	"github.com/chuongtrh/ai-quota/internal/notify"
 	"github.com/chuongtrh/ai-quota/internal/provider/antigravity"
 	"github.com/chuongtrh/ai-quota/internal/provider/claude"
+	"github.com/chuongtrh/ai-quota/internal/provider/codex"
 )
 
 type App struct {
 	service               *appcore.Service
+	codexInstaller        codex.Installer
 	claudeInstaller       claude.Installer
 	antigravityInstaller  antigravity.Installer
+	codexConnection       connectionStateCache
 	claudeConnection      connectionStateCache
 	antigravityConnection connectionStateCache
 	version               string
@@ -97,6 +100,7 @@ var providerOrder = []model.Provider{
 
 func New(
 	service *appcore.Service,
+	codexInstaller codex.Installer,
 	claudeInstaller claude.Installer,
 	antigravityInstaller antigravity.Installer,
 	version string,
@@ -104,8 +108,14 @@ func New(
 	ctx, cancel := context.WithCancel(context.Background())
 	return &App{
 		service:              service,
+		codexInstaller:       codexInstaller,
 		claudeInstaller:      claudeInstaller,
 		antigravityInstaller: antigravityInstaller,
+		codexConnection: connectionStateCache{
+			check:    codexInstaller.IsConnected,
+			interval: time.Minute,
+			now:      time.Now,
+		},
 		claudeConnection: connectionStateCache{
 			check:    claudeInstaller.IsConnected,
 			interval: time.Minute,
@@ -137,7 +147,7 @@ func (a *App) onReady() {
 
 	for _, provider := range providerOrder {
 		items := &providerQuotaItems{
-			header: systray.AddMenuItem(provider.DisplayName(), provider.DisplayName()+" quota windows"),
+			header: systray.AddMenuItem(provider.DisplayName(), ""),
 		}
 		items.Hide()
 		a.quotaItems[provider] = items
@@ -147,7 +157,7 @@ func (a *App) onReady() {
 	disabledItem("🔔 Alerts at 20% and 5% remaining")
 	a.updated = disabledItem("🔄 Not updated yet")
 	a.refresh = systray.AddMenuItem("↻ Refresh now", "Fetch the latest quota data")
-	providers := systray.AddMenuItem("🧩 Providers", "Manage quota tracking providers")
+	providers := systray.AddMenuItem("🧩 Providers", "")
 	for _, provider := range providerOrder {
 		providerMenu := providers.AddSubMenuItem(provider.DisplayName(), "")
 		status := providerMenu.AddSubMenuItem("⏳ Checking status", "")
@@ -181,7 +191,7 @@ func (a *App) eventLoop() {
 		case <-a.refresh.ClickedCh:
 			go a.service.Refresh(a.ctx)
 		case <-a.providerItems[model.ProviderCodex].action.ClickedCh:
-			go a.service.Refresh(a.ctx)
+			a.toggleCodexTracking()
 		case <-a.providerItems[model.ProviderClaudeCode].action.ClickedCh:
 			a.toggleClaudeTracking()
 		case <-a.providerItems[model.ProviderAntigravity].action.ClickedCh:
@@ -194,6 +204,7 @@ func (a *App) eventLoop() {
 
 func (a *App) updateMenu() {
 	statuses := a.service.Statuses()
+	codexConnected, codexSettingsErr := a.codexConnection.Get(false)
 	claudeConnected, claudeSettingsErr := a.claudeConnection.Get(false)
 	antigravityConnected, antigravitySettingsErr := a.antigravityConnection.Get(false)
 	visibleProviders := make(map[model.Provider]bool, len(providerOrder))
@@ -202,6 +213,8 @@ func (a *App) updateMenu() {
 		connected := true
 		var settingsErr error
 		switch provider {
+		case model.ProviderCodex:
+			connected, settingsErr = codexConnected, codexSettingsErr
 		case model.ProviderClaudeCode:
 			connected, settingsErr = claudeConnected, claudeSettingsErr
 		case model.ProviderAntigravity:
@@ -214,7 +227,7 @@ func (a *App) updateMenu() {
 		}
 	}
 	if visibleCount == 0 {
-		if claudeConnected && claudeSettingsErr == nil || antigravityConnected && antigravitySettingsErr == nil {
+		if codexConnected && codexSettingsErr == nil || claudeConnected && claudeSettingsErr == nil || antigravityConnected && antigravitySettingsErr == nil {
 			a.waiting.SetTitle("⏳ Waiting for quota data")
 		} else {
 			a.waiting.SetTitle("⏳ Waiting for provider setup")
@@ -246,7 +259,7 @@ func (a *App) updateMenu() {
 		a.updated.SetTitle("🔄 Updated " + formatAgo(time.Since(latest)))
 	}
 
-	a.updateCodexProviderMenu(statuses[model.ProviderCodex])
+	a.updateStatusLineProviderMenu(model.ProviderCodex, statuses[model.ProviderCodex], codexConnected, codexSettingsErr)
 	a.updateStatusLineProviderMenu(model.ProviderClaudeCode, statuses[model.ProviderClaudeCode], claudeConnected, claudeSettingsErr)
 	a.updateStatusLineProviderMenu(model.ProviderAntigravity, statuses[model.ProviderAntigravity], antigravityConnected, antigravitySettingsErr)
 }
@@ -271,6 +284,33 @@ func (a *App) updateProvider(
 	items.header.SetTitle(headerTitle)
 	items.SetRows(quotaRowsForProvider(status, time.Now()))
 	return true
+}
+
+func (a *App) toggleCodexTracking() {
+	connected, err := a.codexConnection.Get(true)
+	if err != nil {
+		_ = notify.Send("⚠️ Could not read Codex settings", err.Error())
+		return
+	}
+	if connected {
+		err = a.codexInstaller.Disconnect()
+		if err == nil {
+			a.service.ClearProvider(model.ProviderCodex)
+			_ = notify.Send("AI quota", "Codex tracking was disabled.")
+		}
+	} else {
+		err = a.codexInstaller.Connect()
+		if err == nil {
+			a.service.ClearProvider(model.ProviderCodex)
+			go a.service.Refresh(a.ctx)
+			_ = notify.Send("AI quota", "Codex tracking is enabled.")
+		}
+	}
+	if err != nil {
+		_ = notify.Send("⚠️ Could not update Codex tracking", err.Error())
+	}
+	_, _ = a.codexConnection.Get(true)
+	a.updateMenu()
 }
 
 func (a *App) toggleClaudeTracking() {
@@ -335,26 +375,6 @@ func (a *App) toggleAntigravityTracking() {
 	a.updateMenu()
 }
 
-func (a *App) updateCodexProviderMenu(status model.ProviderStatus) {
-	items := a.providerItems[model.ProviderCodex]
-	items.action.SetTitle("Check availability")
-	items.action.SetTooltip("Check the local Codex CLI and refresh quota data")
-	switch {
-	case len(status.Windows) > 0 && status.Error == "":
-		items.status.SetTitle("🟢 Tracking active")
-		items.status.SetTooltip("Codex quota data is available")
-	case len(status.Windows) > 0:
-		items.status.SetTitle("🟡 Showing cached quota")
-		items.status.SetTooltip(status.Error)
-	case status.Error != "":
-		items.status.SetTitle("⚪ Setup required")
-		items.status.SetTooltip(status.Error)
-	default:
-		items.status.SetTitle("⏳ Checking availability")
-		items.status.SetTooltip("Waiting for the first Codex quota refresh")
-	}
-}
-
 func (a *App) updateStatusLineProviderMenu(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) {
 	items := a.providerItems[provider]
 	state := statusLineProviderMenuState(provider, status, connected, settingsErr)
@@ -372,7 +392,7 @@ type providerMenuState struct {
 }
 
 func statusLineProviderMenuState(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) providerMenuState {
-	connector := "Install the official " + provider.DisplayName() + " status line connector"
+	connector := "Enable quota tracking for " + provider.DisplayName()
 	if settingsErr != nil {
 		return providerMenuState{
 			statusTitle: "⚠️ Settings unavailable", statusTooltip: settingsErr.Error(),
@@ -381,11 +401,11 @@ func statusLineProviderMenuState(provider model.Provider, status model.ProviderS
 	}
 	if !connected {
 		return providerMenuState{
-			statusTitle: "⚪ Tracking disabled", statusTooltip: provider.DisplayName() + " quota tracking is not configured",
+			statusTitle: "⚪ Tracking disabled", statusTooltip: provider.DisplayName() + " quota tracking is disabled",
 			actionTitle: "Enable tracking", actionTooltip: connector,
 		}
 	}
-	state := providerMenuState{actionTitle: "Disable tracking", actionTooltip: "Restore the previous " + provider.DisplayName() + " status line"}
+	state := providerMenuState{actionTitle: "Disable tracking", actionTooltip: "Disable quota tracking for " + provider.DisplayName()}
 	switch {
 	case len(status.Windows) == 0:
 		state.statusTitle = "⏳ Waiting for quota data"
@@ -401,16 +421,10 @@ func statusLineProviderMenuState(provider model.Provider, status model.ProviderS
 }
 
 func initialProviderAction(provider model.Provider) string {
-	if provider == model.ProviderCodex {
-		return "Check availability"
-	}
 	return "Enable tracking"
 }
 
 func initialProviderActionTooltip(provider model.Provider) string {
-	if provider == model.ProviderCodex {
-		return "Check the local Codex CLI and refresh quota data"
-	}
 	return "Enable quota tracking for " + provider.DisplayName()
 }
 
@@ -440,9 +454,6 @@ func mostUrgentRemaining(
 }
 
 func providerVisible(provider model.Provider, status model.ProviderStatus, connected bool, settingsErr error) bool {
-	if provider == model.ProviderCodex {
-		return len(status.Windows) > 0
-	}
 	return connected && settingsErr == nil
 }
 
