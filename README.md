@@ -20,9 +20,11 @@ AI quota uses only integration surfaces documented by each provider:
 
 - **Codex:** starts the local `codex app-server` process and calls `account/rateLimits/read` over JSON-RPC. See [Codex App Server](https://developers.openai.com/codex/app-server).
 - **Claude Code:** receives `rate_limits.five_hour` and `rate_limits.seven_day` through the official status line JSON payload. See [Claude Code status line](https://code.claude.com/docs/en/statusline).
-- **Google Antigravity CLI:** receives each quota bucket's `remaining_fraction`, `reset_time`, and `reset_in_seconds` through the official custom status line JSON payload. See [Antigravity CLI status line customization](https://antigravity.google/docs/cli/statusline/).
+- **Google Antigravity:** receives model quota buckets via the local Antigravity Language Server (IDE & Desktop) through its localhost service, or via the official Antigravity CLI custom status line JSON payload. See [Antigravity CLI status line customization](https://antigravity.google/docs/cli/statusline/).
 
-The app does not call undocumented endpoints, scrape web pages, or proxy AI requests through another server.
+For a complete breakdown of design principles, architecture diagrams, and end-to-end data flows, see [Architecture & Design](docs/ARCHITECTURE.md).
+
+The app does not call undocumented cloud endpoints, scrape web pages, or proxy AI requests through another server.
 
 ## Requirements
 
@@ -208,16 +210,17 @@ Remaining quota is calculated as `100 - used_percentage` from provider-reported 
 
 - Claude Code sends quota fields only after the first API response in a session.
 - Claude documents these status line fields for Pro and Max plans; Team and Enterprise accounts may not provide them.
-- Google Antigravity CLI sends quota data through the status-line hook after the CLI is running and has refreshed its model quota state.
-- Antigravity desktop and IDE are not tracked because Google does not document a quota integration surface for those products.
+- Google Antigravity CLI sends quota data through the status-line hook after the CLI has refreshed its model quota state.
+- Antigravity IDE and Desktop apps require the background Language Server process to be running to retrieve live quota.
 - Version 0.1 targets macOS and builds for the architecture of the Mac running the script.
 - AI quota displays provider-reported values and does not estimate quota usage.
 
 ## Project structure
 
 ```text
-cmd/aiquota/                 App entry point and Claude bridge mode
+cmd/aiquota/                 App entry point and status-line bridge modes
 cmd/icon-gen/                macOS iconset generator
+docs/ARCHITECTURE.md         Comprehensive system architecture and flow documentation
 internal/alerts/             Alert thresholds and deduplication
 internal/appcore/            Refresh orchestration and in-memory state
 internal/config/             Application data and provider paths
@@ -225,9 +228,9 @@ internal/icon/               Programmatic tray and app icon rendering
 internal/model/              Normalized providers, windows, and severity
 internal/notify/             Native macOS UserNotifications bridge
 internal/provider/           Provider extension interface
-internal/provider/codex/     Codex App Server connector
-internal/provider/claude/    Status line connector, cache, and settings backup
-internal/provider/antigravity/ Antigravity CLI status line connector, cache, and backup
+internal/provider/codex/     Codex App Server connector & installer
+internal/provider/claude/    Claude status line connector, cache, and settings backup
+internal/provider/antigravity/ Antigravity Language Server & CLI status line connectors
 internal/storage/            Atomic JSON persistence
 internal/tray/               Menu bar UI and provider management menus
 packaging/macos/Info.plist   macOS bundle metadata
